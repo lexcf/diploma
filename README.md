@@ -319,3 +319,4 @@ sudo python main.py --mode detect --window-size 10
 Этот проект создан в учебных целях.
 
 test
+test
