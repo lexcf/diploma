@@ -8,12 +8,14 @@ import sys
 import os
 from typing import Optional
 from packet_capture import PacketCapture
-from aggregation import TimeWindowAggregator, FlowAggregator
+from aggregation import TimeWindowAggregator
 from anomaly_detector import AnomalyDetector
+from alerting import TrafficLogger, build_zip_from_packets, send_zip_to_server
+import config
 import time
 
 
-def train_model(interface: str, duration_minutes: int, aggregation_type: str, 
+def train_model(interface: str, duration_minutes: int,
                 window_size: float, model_path: str):
     """
     Обучение модели на сетевом трафике.
@@ -21,27 +23,21 @@ def train_model(interface: str, duration_minutes: int, aggregation_type: str,
     Args:
         interface: Имя сетевого интерфейса
         duration_minutes: Длительность обучения в минутах
-        aggregation_type: Тип агрегации ('time_window' или 'flow')
-        window_size: Размер временного окна в секундах (для time_window)
+        window_size: Размер временного окна в секундах
         model_path: Путь для сохранения модели
     """
     print(f"=" * 60)
     print(f"Обучение модели детекции аномалий")
     print(f"Интерфейс: {interface}")
     print(f"Длительность: {duration_minutes} минут")
-    print(f"Тип агрегации: {aggregation_type}")
-    if aggregation_type == 'time_window':
-        print(f"Размер окна: {window_size} секунд")
+    print(f"Тип агрегации: time_window")
+    print(f"Размер окна: {window_size} секунд")
     print(f"=" * 60)
     
     # Инициализация компонентов
     capture = PacketCapture(interface)
-    detector = AnomalyDetector()
-    
-    if aggregation_type == 'time_window':
-        aggregator = TimeWindowAggregator(window_size=window_size)
-    else:
-        aggregator = FlowAggregator()
+    detector = AnomalyDetector(contamination=config.model.contamination)
+    aggregator = TimeWindowAggregator(window_size=window_size)
     
     aggregated_data = []
     
@@ -55,10 +51,7 @@ def train_model(interface: str, duration_minutes: int, aggregation_type: str,
     capture.capture_packets(duration_seconds, callback=process_packet)
     
     # Завершение последних агрегированных данных
-    if aggregation_type == 'time_window':
-        remaining = aggregator.flush()
-    else:
-        remaining = aggregator.flush_all()
+    remaining = aggregator.flush()
     aggregated_data.extend(remaining)
     
     if not aggregated_data:
@@ -75,18 +68,15 @@ def train_model(interface: str, duration_minutes: int, aggregation_type: str,
     except Exception as e:
         print(f"Ошибка при обучении: {e}")
         sys.exit(1)
-
-
-def detect_anomalies(interface: str, model_path: str, aggregation_type: str, 
-                    window_size: float, score_threshold: Optional[float] = None):
+def detect_anomalies(interface: str, model_path: str,
+                     window_size: float, score_threshold: Optional[float] = None):
     """
     Детекция аномалий в реальном времени.
     
     Args:
         interface: Имя сетевого интерфейса
         model_path: Путь к сохраненной модели
-        aggregation_type: Тип агрегации ('time_window' или 'flow')
-        window_size: Размер временного окна в секундах (для time_window)
+        window_size: Размер временного окна в секундах
         score_threshold: Порог по anomaly_score (None = использовать бинарное предсказание)
                         Чем ниже порог, тем выше чувствительность
     """
@@ -94,9 +84,8 @@ def detect_anomalies(interface: str, model_path: str, aggregation_type: str,
     print(f"Детекция аномалий в сетевом трафике")
     print(f"Интерфейс: {interface}")
     print(f"Модель: {model_path}")
-    print(f"Тип агрегации: {aggregation_type}")
-    if aggregation_type == 'time_window':
-        print(f"Размер окна: {window_size} секунд")
+    print(f"Тип агрегации: time_window")
+    print(f"Размер окна: {window_size} секунд")
     print(f"=" * 60)
     print("Нажмите Ctrl+C для остановки\n")
     
@@ -114,11 +103,8 @@ def detect_anomalies(interface: str, model_path: str, aggregation_type: str,
     
     # Инициализация компонентов
     capture = PacketCapture(interface)
-    
-    if aggregation_type == 'time_window':
-        aggregator = TimeWindowAggregator(window_size=window_size)
-    else:
-        aggregator = FlowAggregator()
+    aggregator = TimeWindowAggregator(window_size=window_size)
+    traffic_logger = TrafficLogger(retention_minutes=config.detection.traffic_log_minutes)
     
     anomaly_count = 0
     total_count = 0
@@ -126,7 +112,10 @@ def detect_anomalies(interface: str, model_path: str, aggregation_type: str,
     def process_packet(packet):
         """Обработка каждого захваченного пакета."""
         nonlocal anomaly_count, total_count
-        
+
+        # Логируем все пакеты для последующего формирования архива
+        traffic_logger.add_packet(packet)
+
         completed = aggregator.add_packet(packet)
         
         if completed:
@@ -137,7 +126,42 @@ def detect_anomalies(interface: str, model_path: str, aggregation_type: str,
                 total_count += 1
                 if result['is_anomaly']:
                     anomaly_count += 1
-                    print_anomaly(result, aggregation_type)
+                    handle_anomaly(result, traffic_logger)
+
+    def handle_anomaly(result: dict, logger: TrafficLogger):
+        """Обработка обнаруженной аномалии: вывод и отправка лога трафика."""
+        print_anomaly(result)
+
+        if not config.detection.send_zip_on_anomaly:
+            return
+
+        window_end = result.get('window_end', time.time())
+        packets_for_zip = logger.get_recent_packets(window_end)
+
+        if not packets_for_zip:
+            print("Нет пакетов для формирования архива трафика за указанный период.")
+            return
+
+        zip_path = build_zip_from_packets(packets_for_zip)
+        if not zip_path:
+            print("Не удалось сформировать ZIP-архив с трафиком.")
+            return
+
+        window_end_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(window_end))
+        message = (
+            f"Обнаружена аномалия в окне, заканчивающемся в {window_end_str}. "
+            f"В архиве {len(packets_for_zip)} пакетов за последние "
+            f"{config.detection.traffic_log_minutes} минут."
+        )
+
+        ok = send_zip_to_server(zip_path, config.detection.alert_server_url, message)
+        if ok:
+            print(f"Архив с трафиком отправлен на {config.detection.alert_server_url}: {zip_path}")
+        else:
+            print(
+                f"Не удалось отправить архив на {config.detection.alert_server_url}. "
+                f"Файл сохранён локально: {zip_path}"
+            )
     
     try:
         capture.capture_packets_continuous(process_packet)
@@ -147,54 +171,41 @@ def detect_anomalies(interface: str, model_path: str, aggregation_type: str,
         print(f"Аномалий обнаружено: {anomaly_count}")
 
 
-def print_anomaly(result: dict, aggregation_type: str):
+def print_anomaly(result: dict):
     """
     Вывод информации об аномалии в консоль.
     
     Args:
         result: Словарь с результатом детекции
-        aggregation_type: Тип агрегации
     """
     print("\n" + "!" * 60)
     print("ОБНАРУЖЕНА АНОМАЛИЯ")
     print("!" * 60)
     
-    if aggregation_type == 'time_window':
-        window_start = result.get('window_start', 0)
-        window_end = result.get('window_end', 0)
-        duration = result.get('duration', 0)
-        
-        # Форматируем время с миллисекундами для точности
-        start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(window_start))
-        end_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(window_end))
-        
-        # Добавляем миллисекунды
-        start_ms = int((window_start % 1) * 1000)
-        end_ms = int((window_end % 1) * 1000)
-        
-        print(f"Временное окно: {start_str}.{start_ms:03d} - {end_str}.{end_ms:03d}")
-        print(f"Длительность окна: {duration:.3f} секунд (ожидается: {window_end - window_start:.3f})")
-        print(f"Количество пакетов: {result.get('packet_count', 0)}")
-        print(f"Пакетов в секунду: {result.get('packets_per_second', 0):.2f}")
-        print(f"Уникальных IP источников: {result.get('unique_src_ip', 0)}")
-        print(f"Уникальных IP назначения: {result.get('unique_dst_ip', 0)}")
-        print(f"Уникальных портов источников: {result.get('unique_src_port', 0)}")
-        print(f"Уникальных портов назначения: {result.get('unique_dst_port', 0)}")
-        print(f"Средняя длина пакета: {result.get('avg_length', 0):.2f} байт")
-        print(f"Протокол TCP: {result.get('proto_tcp', 0)} пакетов")
-        print(f"Протокол UDP: {result.get('proto_udp', 0)} пакетов")
-        print(f"Протокол ICMP: {result.get('proto_icmp', 0)} пакетов")
-    else:
-        print(f"Flow: {result.get('flow_key', 'N/A')}")
-        print(f"Источник: {result.get('src_ip', 'N/A')}")
-        print(f"Назначение: {result.get('dst_ip', 'N/A')}")
-        print(f"Протокол: {result.get('proto', 'N/A')}")
-        print(f"Количество пакетов: {result.get('packet_count', 0)}")
-        print(f"Общий объем: {result.get('bytes_total', 0)} байт")
-        print(f"Длительность: {result.get('duration', 0):.2f} секунд")
-        print(f"Пакетов в секунду: {result.get('packets_per_second', 0):.2f}")
-        print(f"Байт в секунду: {result.get('bytes_per_second', 0):.2f}")
-        print(f"Средняя длина пакета: {result.get('avg_length', 0):.2f} байт")
+    window_start = result.get('window_start', 0)
+    window_end = result.get('window_end', 0)
+    duration = result.get('duration', 0)
+
+    # Форматируем время с миллисекундами для точности
+    start_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(window_start))
+    end_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(window_end))
+
+    # Добавляем миллисекунды
+    start_ms = int((window_start % 1) * 1000)
+    end_ms = int((window_end % 1) * 1000)
+
+    print(f"Временное окно: {start_str}.{start_ms:03d} - {end_str}.{end_ms:03d}")
+    print(f"Длительность окна: {duration:.3f} секунд (ожидается: {window_end - window_start:.3f})")
+    print(f"Количество пакетов: {result.get('packet_count', 0)}")
+    print(f"Пакетов в секунду: {result.get('packets_per_second', 0):.2f}")
+    print(f"Уникальных IP источников: {result.get('unique_src_ip', 0)}")
+    print(f"Уникальных IP назначения: {result.get('unique_dst_ip', 0)}")
+    print(f"Уникальных портов источников: {result.get('unique_src_port', 0)}")
+    print(f"Уникальных портов назначения: {result.get('unique_dst_port', 0)}")
+    print(f"Средняя длина пакета: {result.get('avg_length', 0):.2f} байт")
+    print(f"Протокол TCP: {result.get('proto_tcp', 0)} пакетов")
+    print(f"Протокол UDP: {result.get('proto_udp', 0)} пакетов")
+    print(f"Протокол ICMP: {result.get('proto_icmp', 0)} пакетов")
     
     print(f"Оценка аномальности: {result.get('anomaly_score', 0):.4f}")
     print("!" * 60 + "\n")
@@ -210,8 +221,8 @@ def main():
     parser.add_argument(
         '--interface', '-i',
         type=str,
-        default='eth0',
-        help='Имя сетевого интерфейса (по умолчанию: eth0)'
+        default=config.training.interface,
+        help=f'Имя сетевого интерфейса (по умолчанию: {config.training.interface})'
     )
     
     parser.add_argument(
@@ -225,38 +236,38 @@ def main():
     parser.add_argument(
         '--model', '-M',
         type=str,
-        default='anomaly_model.pkl',
-        help='Путь к файлу модели (по умолчанию: anomaly_model.pkl)'
+        default=config.training.model_path,
+        help=f'Путь к файлу модели (по умолчанию: {config.training.model_path})'
     )
     
     parser.add_argument(
         '--duration', '-d',
         type=int,
-        default=5,
-        help='Длительность обучения в минутах (только для режима train, по умолчанию: 5)'
-    )
-    
-    parser.add_argument(
-        '--aggregation', '-a',
-        type=str,
-        choices=['time_window', 'flow'],
-        default='time_window',
-        help='Тип агрегации: time_window (по временному окну) или flow (по flow 5-tuple, по умолчанию: time_window)'
+        default=config.training.duration_minutes,
+        help=(
+            'Длительность обучения в минутах (только для режима train, '
+            f'по умолчанию: {config.training.duration_minutes})'
+        )
     )
     
     parser.add_argument(
         '--window-size', '-w',
         type=float,
-        default=5.0,
-        help='Размер временного окна в секундах (только для time_window, по умолчанию: 5.0)'
+        default=config.training.window_size_seconds,
+        help=(
+            'Размер временного окна в секундах (используется в обоих режимах, '
+            f'по умолчанию: {config.training.window_size_seconds})'
+        )
     )
-    
+
     parser.add_argument(
         '--score-threshold', '-t',
         type=float,
-        default=None,
-        help='Порог по anomaly_score для детекции (None = использовать бинарное предсказание). '
-             'Чем ниже порог, тем выше чувствительность. Для Isolation Forest обычно -0.5 до 0.0'
+        default=config.detection.score_threshold,
+        help=(
+            'Порог по anomaly_score для детекции (None = использовать бинарное предсказание). '
+            'Чем ниже порог, тем выше чувствительность. Для Isolation Forest обычно -0.5 до 0.0'
+        )
     )
     
     args = parser.parse_args()
@@ -266,7 +277,6 @@ def main():
         train_model(
             interface=args.interface,
             duration_minutes=args.duration,
-            aggregation_type=args.aggregation,
             window_size=args.window_size,
             model_path=args.model
         )
@@ -279,7 +289,6 @@ def main():
         detect_anomalies(
             interface=args.interface,
             model_path=args.model,
-            aggregation_type=args.aggregation,
             window_size=args.window_size,
             score_threshold=args.score_threshold
         )
