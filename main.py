@@ -30,7 +30,6 @@ def train_model(interface: str, duration_minutes: int,
     print(f"Обучение модели детекции аномалий")
     print(f"Интерфейс: {interface}")
     print(f"Длительность: {duration_minutes} минут")
-    print(f"Тип агрегации: time_window")
     print(f"Размер окна: {window_size} секунд")
     print(f"=" * 60)
     
