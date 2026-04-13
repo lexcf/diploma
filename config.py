@@ -43,6 +43,10 @@ class DetectionConfig:
     alert_server_url: str = "http://127.0.0.1:5000/anomaly"
     # Отправлять ли ZIP с трафиком при обнаружении аномалии
     send_zip_on_anomaly: bool = True
+    # Логировать ли метаданные аномалий в локальную SQLite БД
+    log_anomalies_to_sqlite: bool = True
+    # Путь к локальной SQLite БД с метаданными аномалий
+    anomalies_sqlite_path: str = "anomalies.db"
 
 
 @dataclass
@@ -57,4 +61,3 @@ class ModelConfig:
 training = TrainingConfig()
 detection = DetectionConfig()
 model = ModelConfig()
-

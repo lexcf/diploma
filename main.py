@@ -11,6 +11,7 @@ from packet_capture import PacketCapture
 from aggregation import TimeWindowAggregator
 from anomaly_detector import AnomalyDetector
 from alerting import TrafficLogger, build_zip_from_packets, send_zip_to_server
+from anomaly_metadata_db import AnomalyMetadataLogger
 import config
 import time
 
@@ -104,6 +105,19 @@ def detect_anomalies(interface: str, model_path: str,
     capture = PacketCapture(interface)
     aggregator = TimeWindowAggregator(window_size=window_size)
     traffic_logger = TrafficLogger(retention_minutes=config.detection.traffic_log_minutes)
+    metadata_logger = None
+    if config.detection.log_anomalies_to_sqlite:
+        try:
+            metadata_logger = AnomalyMetadataLogger(config.detection.anomalies_sqlite_path)
+            print(
+                f"Логирование метаданных аномалий в SQLite включено: "
+                f"{config.detection.anomalies_sqlite_path}"
+            )
+        except Exception as e:
+            print(
+                "Предупреждение: не удалось инициализировать SQLite-логгер аномалий: "
+                f"{e}"
+            )
     
     anomaly_count = 0
     total_count = 0
@@ -130,6 +144,17 @@ def detect_anomalies(interface: str, model_path: str,
     def handle_anomaly(result: dict, logger: TrafficLogger):
         """Обработка обнаруженной аномалии: вывод и отправка лога трафика."""
         print_anomaly(result)
+
+        if metadata_logger is not None:
+            try:
+                metadata_logger.log_anomaly(
+                    result=result,
+                    interface=interface,
+                    model_path=model_path,
+                    score_threshold=detector.score_threshold,
+                )
+            except Exception as e:
+                print(f"Предупреждение: не удалось записать метаданные аномалии в SQLite: {e}")
 
         if not config.detection.send_zip_on_anomaly:
             return
