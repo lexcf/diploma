@@ -1,0 +1,236 @@
+"""
+Запуск детектора аномалий как службы (Windows) или демона (Linux).
+
+  Linux (требуются права root для захвата пакетов):
+      sudo python daemon.py start             # запустить демон в фоне
+      sudo python daemon.py stop              # остановить демон
+      sudo python daemon.py status            # проверить статус
+      sudo python daemon.py generate-systemd  # вывести unit-файл для systemd
+
+  Windows (от имени администратора):
+      python daemon.py install   # зарегистрировать службу
+      python daemon.py start     # запустить службу
+      python daemon.py stop      # остановить службу
+      python daemon.py remove    # удалить службу
+      python daemon.py debug     # запустить интерактивно (для отладки)
+
+Все параметры (интерфейс, длительность обучения, пути к файлам и т.д.)
+берутся из config.py — раздел ServiceConfig.
+"""
+
+import os
+import sys
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in sys.path:
+    sys.path.insert(0, SCRIPT_DIR)
+
+
+# ─── Linux daemon ─────────────────────────────────────────────────────────────
+
+def _daemonize(pid_file: str) -> None:
+    """Классическое двойное ветвление (double-fork) для демонизации."""
+    try:
+        if os.fork() > 0:
+            sys.exit(0)
+    except OSError as exc:
+        sys.exit(f"fork #1 не удался: {exc}")
+
+    os.chdir("/")
+    os.setsid()
+    os.umask(0)
+
+    try:
+        if os.fork() > 0:
+            sys.exit(0)
+    except OSError as exc:
+        sys.exit(f"fork #2 не удался: {exc}")
+
+    # Перенаправляем stdin/stdout/stderr в /dev/null (логи пишутся через logging в файл)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    devnull = os.open(os.devnull, os.O_RDWR)
+    for fd in (sys.stdin.fileno(), sys.stdout.fileno(), sys.stderr.fileno()):
+        os.dup2(devnull, fd)
+    os.close(devnull)
+
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+
+
+def _read_pid(pid_file: str):
+    try:
+        with open(pid_file) as f:
+            return int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _linux_start(pid_file: str) -> None:
+    import signal as _signal
+
+    pid = _read_pid(pid_file)
+    if pid:
+        try:
+            os.kill(pid, 0)
+            print(f"Демон уже запущен (PID {pid})")
+            return
+        except OSError:
+            pass  # устаревший PID-файл
+
+    print("Запуск демона...")
+    _daemonize(pid_file)
+
+    def _on_sigterm(signum, frame) -> None:
+        try:
+            os.remove(pid_file)
+        except OSError:
+            pass
+        sys.exit(0)
+
+    _signal.signal(_signal.SIGTERM, _on_sigterm)
+
+    from service import run_service
+    run_service()
+
+
+def _linux_stop(pid_file: str) -> None:
+    import signal as _signal
+
+    pid = _read_pid(pid_file)
+    if not pid:
+        print("Демон не запущен (PID-файл не найден)")
+        return
+    try:
+        os.kill(pid, _signal.SIGTERM)
+        print(f"Сигнал SIGTERM отправлен процессу {pid}")
+    except ProcessLookupError:
+        print(f"Процесс {pid} не найден (устаревший PID-файл)")
+        try:
+            os.remove(pid_file)
+        except OSError:
+            pass
+    except PermissionError:
+        print(f"Нет прав для остановки процесса {pid}")
+
+
+def _linux_status(pid_file: str) -> None:
+    pid = _read_pid(pid_file)
+    if not pid:
+        print("Демон не запущен (PID-файл отсутствует)")
+        return
+    try:
+        os.kill(pid, 0)
+        print(f"Демон запущен (PID {pid})")
+    except OSError:
+        print(f"Демон не запущен (устаревший PID-файл: {pid})")
+
+
+def _generate_systemd(pid_file: str) -> None:
+    import config as _cfg
+    python = sys.executable
+    script = os.path.abspath(__file__)
+    unit = f"""\
+[Unit]
+Description=Anomaly Detector — детектор аномалий сетевого трафика
+After=network.target
+
+[Service]
+Type=forking
+PIDFile={pid_file}
+ExecStart={python} {script} start
+ExecStop={python} {script} stop
+WorkingDirectory={SCRIPT_DIR}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+"""
+    print(unit)
+    print("# Установка:")
+    print(f"#   sudo cp anomaly_detector.service /etc/systemd/system/")
+    print(f"#   sudo systemctl daemon-reload")
+    print(f"#   sudo systemctl enable --now anomaly_detector")
+
+
+# ─── Windows service ──────────────────────────────────────────────────────────
+
+_SVC_NAME = "AnomalyDetector"
+_SVC_DISPLAY = "Anomaly Detector"
+_SVC_DESC = "Детектор аномалий сетевого трафика"
+
+
+def _run_windows() -> None:
+    try:
+        import win32serviceutil
+        import win32service
+        import win32event
+        import servicemanager
+        import threading
+    except ImportError:
+        print(
+            "Для регистрации Windows-службы установите пакет pywin32:\n"
+            "    pip install pywin32\n"
+            "    python -m pywin32_postinstall -install"
+        )
+        sys.exit(1)
+
+    class _AnomalyDetectorService(win32serviceutil.ServiceFramework):
+        _svc_name_ = _SVC_NAME
+        _svc_display_name_ = _SVC_DISPLAY
+        _svc_description_ = _SVC_DESC
+
+        def __init__(self, args):
+            win32serviceutil.ServiceFramework.__init__(self, args)
+            self._stop_event = win32event.CreateEvent(None, 0, 0, None)
+            self._thread = None
+
+        def SvcStop(self):
+            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
+            win32event.SetEvent(self._stop_event)
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=15)
+
+        def SvcDoRun(self):
+            servicemanager.LogMsg(
+                servicemanager.EVENTLOG_INFORMATION_TYPE,
+                servicemanager.PYS_SERVICE_STARTED,
+                (self._svc_name_, ""),
+            )
+            os.chdir(SCRIPT_DIR)
+            from service import run_service
+            self._thread = threading.Thread(target=run_service, daemon=True)
+            self._thread.start()
+            win32event.WaitForSingleObject(self._stop_event, win32event.INFINITE)
+
+    win32serviceutil.HandleCommandLine(_AnomalyDetectorService)
+
+
+# ─── Entry point ──────────────────────────────────────────────────────────────
+
+def main() -> None:
+    if sys.platform == "win32":
+        _run_windows()
+        return
+
+    import config
+    pid_file = config.service.pid_file
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+
+    commands = {
+        "start": lambda: _linux_start(pid_file),
+        "stop": lambda: _linux_stop(pid_file),
+        "status": lambda: _linux_status(pid_file),
+        "generate-systemd": lambda: _generate_systemd(pid_file),
+    }
+
+    if cmd in commands:
+        commands[cmd]()
+    else:
+        print(__doc__)
+        sys.exit(0 if not cmd else 1)
+
+
+if __name__ == "__main__":
+    main()

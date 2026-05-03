@@ -6,12 +6,14 @@
 import argparse
 import sys
 import os
+import threading
 from typing import Optional
 from packet_capture import PacketCapture
 from aggregation import TimeWindowAggregator
 from anomaly_detector import AnomalyDetector
 from alerting import TrafficLogger, build_zip_from_packets, send_zip_to_server
 from anomaly_metadata_db import AnomalyMetadataLogger
+from logger import setup_logger
 import config
 import time
 
@@ -119,22 +121,48 @@ def detect_anomalies(interface: str, model_path: str,
                 f"{e}"
             )
     
+    log = setup_logger(config.detection.log_file_path)
+    log.info("Запуск детекции аномалий: интерфейс=%s, модель=%s", interface, model_path)
+
     anomaly_count = 0
     total_count = 0
-    
+    stats = {"total": 0, "since_last": 0, "last_ts": time.time()}
+    stop_stats = threading.Event()
+
+    def _log_stats():
+        while not stop_stats.wait(config.detection.log_stats_interval):
+            now = time.time()
+            elapsed = now - stats["last_ts"]
+            pps = stats["since_last"] / elapsed if elapsed > 0 else 0.0
+            log.info(
+                "Статистика трафика: за %.0f с перехвачено %d пакетов (%.1f пак/с), всего %d",
+                elapsed,
+                stats["since_last"],
+                pps,
+                stats["total"],
+            )
+            stats["since_last"] = 0
+            stats["last_ts"] = now
+
+    stats_thread = threading.Thread(target=_log_stats, daemon=True)
+    stats_thread.start()
+
     def process_packet(packet):
         """Обработка каждого захваченного пакета."""
         nonlocal anomaly_count, total_count
+
+        stats["total"] += 1
+        stats["since_last"] += 1
 
         # Логируем все пакеты для последующего формирования архива
         traffic_logger.add_packet(packet)
 
         completed = aggregator.add_packet(packet)
-        
+
         if completed:
             # Предсказание аномалий
             results = detector.predict(completed)
-            
+
             for result in results:
                 total_count += 1
                 if result['is_anomaly']:
@@ -144,6 +172,25 @@ def detect_anomalies(interface: str, model_path: str,
     def handle_anomaly(result: dict, logger: TrafficLogger):
         """Обработка обнаруженной аномалии: вывод и отправка лога трафика."""
         print_anomaly(result)
+
+        window_start = result.get("window_start", 0)
+        window_end = result.get("window_end", 0)
+        start_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(window_start))
+        end_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(window_end))
+        log.warning(
+            "АНОМАЛИЯ обнаружена: окно %s – %s | score=%.4f | пакетов=%d | pps=%.2f"
+            " | src_ip=%d | dst_ip=%d | TCP=%d UDP=%d ICMP=%d",
+            start_str,
+            end_str,
+            result.get("anomaly_score", 0),
+            result.get("packet_count", 0),
+            result.get("packets_per_second", 0),
+            result.get("unique_src_ip", 0),
+            result.get("unique_dst_ip", 0),
+            result.get("proto_tcp", 0),
+            result.get("proto_udp", 0),
+            result.get("proto_icmp", 0),
+        )
 
         if metadata_logger is not None:
             try:
@@ -190,9 +237,16 @@ def detect_anomalies(interface: str, model_path: str,
     try:
         capture.capture_packets_continuous(process_packet)
     except KeyboardInterrupt:
+        stop_stats.set()
         print(f"\n\nОстановлено пользователем")
         print(f"Всего обработано: {total_count}")
         print(f"Аномалий обнаружено: {anomaly_count}")
+        log.info(
+            "Детекция остановлена. Обработано окон: %d, аномалий: %d, пакетов: %d",
+            total_count,
+            anomaly_count,
+            stats["total"],
+        )
 
 
 def print_anomaly(result: dict):
