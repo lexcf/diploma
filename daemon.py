@@ -155,20 +155,68 @@ WantedBy=multi-user.target
 
 
 # ─── Windows service ──────────────────────────────────────────────────────────
+# Класс должен быть на уровне модуля — pywin32 ищет его как daemon._AnomalyDetectorService
 
 _SVC_NAME = "AnomalyDetector"
 _SVC_DISPLAY = "Anomaly Detector"
 _SVC_DESC = "Детектор аномалий сетевого трафика"
 
+try:
+    import win32serviceutil as _w32svc
+    import win32service as _w32
+    import win32event as _w32evt
+    import servicemanager as _svcmgr
+    import threading as _threading
+
+    class _AnomalyDetectorService(_w32svc.ServiceFramework):
+        _svc_name_ = _SVC_NAME
+        _svc_display_name_ = _SVC_DISPLAY
+        _svc_description_ = _SVC_DESC
+
+        def __init__(self, args):
+            _w32svc.ServiceFramework.__init__(self, args)
+            self._stop_event = _w32evt.CreateEvent(None, 0, 0, None)
+            self._thread = None
+
+        def SvcStop(self):
+            self.ReportServiceStatus(_w32.SERVICE_STOP_PENDING)
+            _w32evt.SetEvent(self._stop_event)
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=15)
+
+        def SvcDoRun(self):
+            _svcmgr.LogMsg(
+                _svcmgr.EVENTLOG_INFORMATION_TYPE,
+                _svcmgr.PYS_SERVICE_STARTED,
+                (self._svc_name_, ""),
+            )
+            os.chdir(SCRIPT_DIR)
+            from service import run_service
+            self._thread = _threading.Thread(target=run_service, daemon=True)
+            self._thread.start()
+            _w32evt.WaitForSingleObject(self._stop_event, _w32evt.INFINITE)
+
+    _PYWIN32_OK = True
+
+except ImportError:
+    _PYWIN32_OK = False
+
+
+def _set_python_path_in_registry() -> None:
+    """Прописывает SCRIPT_DIR в реестр, чтобы SCM нашёл наш модуль при старте службы."""
+    try:
+        import win32api, win32con
+        key_path = f"SYSTEM\\CurrentControlSet\\Services\\{_SVC_NAME}\\Parameters"
+        key = win32api.RegCreateKey(win32con.HKEY_LOCAL_MACHINE, key_path)
+        win32api.RegSetValueEx(key, "PythonPath", 0, win32con.REG_SZ, SCRIPT_DIR)
+        win32api.RegCloseKey(key)
+        print(f"PythonPath в реестре установлен: {SCRIPT_DIR}")
+    except Exception as exc:
+        print(f"Предупреждение: не удалось записать PythonPath в реестр: {exc}")
+
 
 def _run_windows() -> None:
-    try:
-        import win32serviceutil
-        import win32service
-        import win32event
-        import servicemanager
-        import threading
-    except ImportError:
+    if not _PYWIN32_OK:
         print(
             "Для регистрации Windows-службы установите пакет pywin32:\n"
             "    pip install pywin32\n"
@@ -176,35 +224,13 @@ def _run_windows() -> None:
         )
         sys.exit(1)
 
-    class _AnomalyDetectorService(win32serviceutil.ServiceFramework):
-        _svc_name_ = _SVC_NAME
-        _svc_display_name_ = _SVC_DISPLAY
-        _svc_description_ = _SVC_DESC
-
-        def __init__(self, args):
-            win32serviceutil.ServiceFramework.__init__(self, args)
-            self._stop_event = win32event.CreateEvent(None, 0, 0, None)
-            self._thread = None
-
-        def SvcStop(self):
-            self.ReportServiceStatus(win32service.SERVICE_STOP_PENDING)
-            win32event.SetEvent(self._stop_event)
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=15)
-
-        def SvcDoRun(self):
-            servicemanager.LogMsg(
-                servicemanager.EVENTLOG_INFORMATION_TYPE,
-                servicemanager.PYS_SERVICE_STARTED,
-                (self._svc_name_, ""),
-            )
-            os.chdir(SCRIPT_DIR)
-            from service import run_service
-            self._thread = threading.Thread(target=run_service, daemon=True)
-            self._thread.start()
-            win32event.WaitForSingleObject(self._stop_event, win32event.INFINITE)
-
-    win32serviceutil.HandleCommandLine(_AnomalyDetectorService)
+    is_install = len(sys.argv) > 1 and sys.argv[1].lower() in ("install", "--install")
+    try:
+        _w32svc.HandleCommandLine(_AnomalyDetectorService)
+    except SystemExit:
+        if is_install:
+            _set_python_path_in_registry()
+        raise
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────

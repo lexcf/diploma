@@ -26,8 +26,14 @@ class PacketCapture:
         
     def check_interface(self) -> bool:
         """Проверка доступности интерфейса."""
-        available_interfaces = get_if_list()
-        return self.interface in available_interfaces
+        available = set(get_if_list())
+        # На Windows get_if_list() возвращает GUID-имена, а ifaces — дружественные
+        try:
+            from scapy.all import ifaces as _ifaces
+            available.update(i.name for i in _ifaces.values() if i.name)
+        except Exception:
+            pass
+        return self.interface in available
     
     def extract_features(self, packet) -> Optional[Dict]:
         """

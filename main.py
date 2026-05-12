@@ -165,6 +165,13 @@ def detect_anomalies(interface: str, model_path: str,
 
             for result in results:
                 total_count += 1
+                log.info(
+                    "Окно: пакетов=%d, pps=%.1f, score=%.4f%s",
+                    result.get("packet_count", 0),
+                    result.get("packets_per_second", 0.0),
+                    result.get("anomaly_score", 0.0),
+                    " [АНОМАЛИЯ]" if result["is_anomaly"] else "",
+                )
                 if result['is_anomaly']:
                     anomaly_count += 1
                     handle_anomaly(result, traffic_logger)
@@ -293,7 +300,24 @@ def main():
     """Главная функция с парсингом аргументов командной строки."""
     parser = argparse.ArgumentParser(
         description='Детекция аномалий в сетевом трафике с использованием обучения без учителя',
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            'Режим service запускает автономную службу/демон: обучение с сохранением\n'
+            'состояния между перезагрузками, затем непрерывная детекция. Все параметры\n'
+            'в этом режиме берутся из блока service в config.py.\n'
+            '\n'
+            'Linux:\n'
+            '  sudo python main.py --mode service start\n'
+            '  sudo python main.py --mode service stop\n'
+            '  sudo python main.py --mode service status\n'
+            '  sudo python main.py --mode service generate-systemd\n'
+            '\n'
+            'Windows (от имени администратора):\n'
+            '  python main.py --mode service install\n'
+            '  python main.py --mode service start\n'
+            '  python main.py --mode service stop\n'
+            '  python main.py --mode service remove\n'
+        )
     )
     
     parser.add_argument(
@@ -306,9 +330,17 @@ def main():
     parser.add_argument(
         '--mode', '-m',
         type=str,
-        choices=['train', 'detect'],
+        choices=['train', 'detect', 'service'],
         required=True,
-        help='Режим работы: train (обучение) или detect (детекция)'
+        help='Режим работы: train (обучение), detect (детекция), service (служба/демон)'
+    )
+
+    parser.add_argument(
+        'service_cmd',
+        nargs='?',
+        metavar='CMD',
+        help='Команда для режима service: start | stop | status | generate-systemd (Linux) '
+             'или install | start | stop | remove | debug (Windows)'
     )
     
     parser.add_argument(
@@ -363,13 +395,20 @@ def main():
             print(f"Ошибка: Файл модели {args.model} не найден.")
             print("Сначала выполните обучение с --mode train")
             sys.exit(1)
-        
+
         detect_anomalies(
             interface=args.interface,
             model_path=args.model,
             window_size=args.window_size,
             score_threshold=args.score_threshold
         )
+    elif args.mode == 'service':
+        import daemon as _daemon
+        if args.service_cmd:
+            sys.argv = [sys.argv[0], args.service_cmd]
+        else:
+            sys.argv = [sys.argv[0]]
+        _daemon.main()
 
 
 if __name__ == '__main__':

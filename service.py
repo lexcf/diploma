@@ -96,9 +96,12 @@ def run_service() -> None:
                 aggregated_data.extend(completed)
                 elapsed_total = elapsed_before + (time.time() - session_start)
                 _save_state(cfg.state_file, elapsed_total, aggregated_data)
+                last = completed[-1]
                 log.info(
-                    "Обучение: окон=%d, прошло=%.0f с из %.0f с",
+                    "Обучение: окон=%d, прошло=%.0f с из %.0f с | "
+                    "последнее окно: пакетов=%d, pps=%.1f",
                     len(aggregated_data), elapsed_total, total_seconds,
+                    last.get("packet_count", 0), last.get("packets_per_second", 0.0),
                 )
 
         log.info("Захват трафика для обучения: %.0f с", remaining)
@@ -171,6 +174,13 @@ def _run_detection(cfg, detector: AnomalyDetector, log) -> None:
         completed = aggregator.add_packet(packet)
         if completed:
             for result in detector.predict(completed):
+                log.info(
+                    "Окно: пакетов=%d, pps=%.1f, score=%.4f%s",
+                    result.get("packet_count", 0),
+                    result.get("packets_per_second", 0.0),
+                    result.get("anomaly_score", 0.0),
+                    " [АНОМАЛИЯ]" if result["is_anomaly"] else "",
+                )
                 if result["is_anomaly"]:
                     _handle_anomaly(result, traffic_logger, metadata_logger, cfg, detector, log)
 

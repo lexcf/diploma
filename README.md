@@ -152,6 +152,22 @@ python -m pywin32_postinstall -install
 | `log_file_path` | Путь к лог-файлу | `"anomaly_detector.log"` |
 | `pid_file` | PID-файл (только Linux) | `"/var/run/anomaly_detector.pid"` |
 
+### Имя интерфейса на Windows
+
+На Windows имя интерфейса для Scapy может отличаться от того, что показывает `ipconfig`. Чтобы найти точное имя, выполните в `cmd`:
+
+```cmd
+python -c "from scapy.all import ifaces; [print(i.name, i.ip) for i in ifaces.values()]"
+```
+
+Найдите строку с нужным IPv4-адресом. Имя интерфейса будет в первой колонке, например `Ethernet`. Вставьте его в `config.py`:
+
+```python
+training = TrainingConfig(interface="Ethernet")
+detection = DetectionConfig(interface="Ethernet")
+service   = ServiceConfig(interface="Ethernet")
+```
+
 ---
 
 ## Режимы запуска
