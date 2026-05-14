@@ -225,6 +225,8 @@ def _run_windows() -> None:
         sys.exit(1)
 
     is_install = len(sys.argv) > 1 and sys.argv[1].lower() in ("install", "--install")
+    if is_install and "--startup" not in sys.argv:
+        sys.argv += ["--startup", "auto"]
     try:
         _w32svc.HandleCommandLine(_AnomalyDetectorService)
     except SystemExit:

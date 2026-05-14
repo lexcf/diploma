@@ -189,7 +189,7 @@ def _run_detection(cfg, detector: AnomalyDetector, log) -> None:
         log.info("Получен SIGTERM. Детекция остановлена. Всего пакетов: %d", stats["total"])
         raise SystemExit(0)
 
-    if hasattr(signal, "SIGTERM"):
+    if hasattr(signal, "SIGTERM") and threading.current_thread() is threading.main_thread():
         signal.signal(signal.SIGTERM, _on_sigterm)
 
     try:
