@@ -39,8 +39,10 @@ class DetectionConfig:
 
     # Сколько минут трафика хранить для отправки на веб-сервер при аномалии
     traffic_log_minutes: int = 5
-    # URL веб-сервера, на который отправляется ZIP с логом трафика
-    alert_server_url: str = "http://127.0.0.1:5000/anomaly"
+    # Хост сервера для отправки архивов (без схемы и пути, например: example.com)
+    alert_server_host: str = ""
+    # Bearer-токен для авторизации на сервере
+    alert_bearer_token: str = "965134b0f26a8f663ae98c68b19847fbff3a0cd53e0a0aec39628b9cec400d1c"
     # Отправлять ли ZIP с трафиком при обнаружении аномалии
     send_zip_on_anomaly: bool = True
     # Логировать ли метаданные аномалий в локальную SQLite БД

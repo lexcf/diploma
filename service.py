@@ -239,9 +239,9 @@ def _handle_anomaly(result, traffic_logger, metadata_logger, cfg, detector, log)
     if not zip_path:
         return
 
-    message = (
-        f"Аномалия в окне {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(we))}. "
-        f"{len(packets_for_zip)} пакетов за последние {config.detection.traffic_log_minutes} мин."
-    )
-    if not send_zip_to_server(zip_path, config.detection.alert_server_url, message):
-        log.warning("Не удалось отправить архив на %s", config.detection.alert_server_url)
+    if not send_zip_to_server(
+        zip_path,
+        config.detection.alert_server_host,
+        config.detection.alert_bearer_token,
+    ):
+        log.warning("Не удалось отправить архив на %s", config.detection.alert_server_host)

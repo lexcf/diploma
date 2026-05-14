@@ -225,21 +225,15 @@ def detect_anomalies(interface: str, model_path: str,
             print("Не удалось сформировать ZIP-архив с трафиком.")
             return
 
-        window_end_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(window_end))
-        message = (
-            f"Обнаружена аномалия в окне, заканчивающемся в {window_end_str}. "
-            f"В архиве {len(packets_for_zip)} пакетов за последние "
-            f"{config.detection.traffic_log_minutes} минут."
+        ok = send_zip_to_server(
+            zip_path,
+            config.detection.alert_server_host,
+            config.detection.alert_bearer_token,
         )
-
-        ok = send_zip_to_server(zip_path, config.detection.alert_server_url, message)
         if ok:
-            print(f"Архив с трафиком отправлен на {config.detection.alert_server_url}: {zip_path}")
+            log.info("Архив с трафиком отправлен: %s", zip_path)
         else:
-            print(
-                f"Не удалось отправить архив на {config.detection.alert_server_url}. "
-                f"Файл сохранён локально: {zip_path}"
-            )
+            log.warning("Не удалось отправить архив. Файл сохранён локально: %s", zip_path)
     
     try:
         capture.capture_packets_continuous(process_packet)
