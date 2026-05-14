@@ -403,12 +403,12 @@ def main():
             score_threshold=args.score_threshold
         )
     elif args.mode == 'service':
-        import daemon as _daemon
+        import subprocess
+        _daemon = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'daemon.py')
+        _cmd = [sys.executable, _daemon]
         if args.service_cmd:
-            sys.argv = [sys.argv[0], args.service_cmd]
-        else:
-            sys.argv = [sys.argv[0]]
-        _daemon.main()
+            _cmd.append(args.service_cmd)
+        sys.exit(subprocess.call(_cmd))
 
 
 if __name__ == '__main__':

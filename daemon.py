@@ -224,15 +224,27 @@ def _run_windows() -> None:
         )
         sys.exit(1)
 
-    is_install = len(sys.argv) > 1 and sys.argv[1].lower() in ("install", "--install")
-    if is_install and "--startup" not in sys.argv:
-        sys.argv += ["--startup", "auto"]
-    try:
-        _w32svc.HandleCommandLine(_AnomalyDetectorService)
-    except SystemExit:
-        if is_install:
+    cmd = sys.argv[1].lower() if len(sys.argv) > 1 else ""
+
+    if cmd in ("install", "--install"):
+        # Вызываем InstallService напрямую, чтобы задать startType=AUTO_START,
+        # так как HandleCommandLine по умолчанию ставит DEMAND_START (вручную).
+        try:
+            class_str = f"{_AnomalyDetectorService.__module__}.{_AnomalyDetectorService.__qualname__}"
+            _w32svc.InstallService(
+                class_str,
+                _SVC_NAME,
+                _SVC_DISPLAY,
+                startType=_w32.SERVICE_AUTO_START,
+            )
+            print(f"Служба '{_SVC_DISPLAY}' установлена")
             _set_python_path_in_registry()
-        raise
+            print("Тип запуска службы: Автоматически")
+        except Exception as exc:
+            print(f"Ошибка при установке службы: {exc}")
+            sys.exit(1)
+    else:
+        _w32svc.HandleCommandLine(_AnomalyDetectorService)
 
 
 # ─── Entry point ──────────────────────────────────────────────────────────────
