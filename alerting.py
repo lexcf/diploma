@@ -106,9 +106,13 @@ def send_zip_to_server(zip_path: str, host: str, token: str) -> bool:
             resp = requests.post(url, files=files, headers=headers, timeout=10)
 
         if 200 <= resp.status_code < 300:
+            _log.info("Архив отправлен на %s: %d %s", url, resp.status_code, resp.text[:200])
             return True
 
-        _log.error("Сервер вернул ошибку %d при отправке архива на %s", resp.status_code, url)
+        _log.error(
+            "Сервер вернул ошибку %d при отправке архива на %s: %s",
+            resp.status_code, url, resp.text[:200],
+        )
         return False
 
     except requests.exceptions.ConnectionError as exc:

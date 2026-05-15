@@ -202,19 +202,6 @@ except ImportError:
     _PYWIN32_OK = False
 
 
-def _set_python_path_in_registry() -> None:
-    """Прописывает SCRIPT_DIR в реестр, чтобы SCM нашёл наш модуль при старте службы."""
-    try:
-        import win32api, win32con
-        key_path = f"SYSTEM\\CurrentControlSet\\Services\\{_SVC_NAME}\\Parameters"
-        key = win32api.RegCreateKey(win32con.HKEY_LOCAL_MACHINE, key_path)
-        win32api.RegSetValueEx(key, "PythonPath", 0, win32con.REG_SZ, SCRIPT_DIR)
-        win32api.RegCloseKey(key)
-        print(f"PythonPath в реестре установлен: {SCRIPT_DIR}")
-    except Exception as exc:
-        print(f"Предупреждение: не удалось записать PythonPath в реестр: {exc}")
-
-
 def _run_windows() -> None:
     if not _PYWIN32_OK:
         print(
@@ -227,23 +214,54 @@ def _run_windows() -> None:
     cmd = sys.argv[1].lower() if len(sys.argv) > 1 else ""
 
     if cmd in ("install", "--install"):
-        # Вызываем InstallService напрямую, чтобы задать startType=AUTO_START,
-        # так как HandleCommandLine по умолчанию ставит DEMAND_START (вручную).
+        # Регистрируем python.exe как исполняемый файл службы — это надёжнее, чем
+        # PythonService.exe, которому нужно искать модуль через реестр.
         try:
-            class_str = f"{_AnomalyDetectorService.__module__}.{_AnomalyDetectorService.__qualname__}"
-            _w32svc.InstallService(
-                class_str,
-                _SVC_NAME,
-                _SVC_DISPLAY,
-                startType=_w32.SERVICE_AUTO_START,
+            import win32service
+            script_path = os.path.abspath(__file__)
+            binary_path = f'"{sys.executable}" "{script_path}" _svc_run'
+            sc = win32service.OpenSCManager(
+                None, None, win32service.SC_MANAGER_CREATE_SERVICE
             )
+            try:
+                hsvc = win32service.CreateService(
+                    sc,
+                    _SVC_NAME,
+                    _SVC_DISPLAY,
+                    win32service.SERVICE_ALL_ACCESS,
+                    win32service.SERVICE_WIN32_OWN_PROCESS,
+                    win32service.SERVICE_AUTO_START,
+                    win32service.SERVICE_ERROR_NORMAL,
+                    binary_path,
+                    None, 0, None, None, None,
+                )
+                win32service.CloseServiceHandle(hsvc)
+            finally:
+                win32service.CloseServiceHandle(sc)
             print(f"Служба '{_SVC_DISPLAY}' установлена")
-            _set_python_path_in_registry()
             print("Тип запуска службы: Автоматически")
         except Exception as exc:
             print(f"Ошибка при установке службы: {exc}")
             sys.exit(1)
+
+    elif cmd == "_svc_run":
+        # Точка входа, которую SCM запускает при старте службы.
+        import servicemanager as _sm
+        _sm.Initialize()
+        _sm.PrepareToHostSingle(_AnomalyDetectorService)
+        _sm.StartServiceCtrlDispatcher()
+
+    elif cmd in ("debug", "--debug"):
+        print(f"Debugging service {_SVC_NAME} - press Ctrl+C to stop.")
+        os.chdir(SCRIPT_DIR)
+        from service import run_service
+        try:
+            run_service()
+        except KeyboardInterrupt:
+            print("\nОстановлено.")
+
     else:
+        # start / stop / remove — просто команды к SCM, импорт модуля не нужен
         _w32svc.HandleCommandLine(_AnomalyDetectorService)
 
 

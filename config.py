@@ -75,6 +75,9 @@ class ServiceConfig:
     window_size_seconds: float = 5.0
     # Путь к файлу модели
     model_path: str = "anomaly_model.pkl"
+    # Порог по anomaly_score (None = использовать бинарное предсказание модели)
+    # Чем ниже значение, тем выше чувствительность.
+    score_threshold: Optional[float] = None
     # Файл состояния обучения (сохраняется между перезагрузками)
     state_file: str = "service_training_state.json"
     # Путь к лог-файлу

@@ -73,6 +73,8 @@ def run_service() -> None:
         log.info("Модель найдена (%s), обучение пропущено", cfg.model_path)
         detector = AnomalyDetector()
         detector.load(cfg.model_path)
+        if cfg.score_threshold is not None:
+            detector.score_threshold = cfg.score_threshold
         _run_detection(cfg, detector, log)
         return
     else:
@@ -126,6 +128,9 @@ def run_service() -> None:
     except Exception as exc:
         log.error("Ошибка при обучении модели: %s", exc)
         return
+
+    if cfg.score_threshold is not None:
+        detector.score_threshold = cfg.score_threshold
 
     try:
         os.remove(cfg.state_file)
