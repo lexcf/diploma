@@ -10,33 +10,34 @@ from typing import Optional
 
 
 @dataclass
-class TrainingConfig:
-    """Параметры режима обучения."""
+class CommonConfig:
+    """Базовые параметры, общие для всех режимов."""
 
-    # Имя сетевого интерфейса по умолчанию
+    # Имя сетевого интерфейса
     interface: str = "eth0"
-    # Длительность обучения (захвата трафика) в минутах
-    duration_minutes: int = 5
     # Размер временного окна агрегации в секундах
     window_size_seconds: float = 5.0
     # Путь к файлу модели
     model_path: str = "anomaly_model.pkl"
+    # Путь к файлу лога
+    log_file_path: str = "anomaly_detector.log"
+
+
+@dataclass
+class TrainingConfig:
+    """Параметры режима обучения."""
+
+    # Длительность обучения (захвата трафика) в минутах
+    duration_minutes: int = 5
 
 
 @dataclass
 class DetectionConfig:
-    """Параметры режима детекции."""
+    """Параметры режима детекции (используются также в режиме службы)."""
 
-    # Имя сетевого интерфейса по умолчанию
-    interface: str = "eth0"
-    # Размер временного окна агрегации в секундах
-    window_size_seconds: float = 5.0
-    # Путь к файлу модели
-    model_path: str = "anomaly_model.pkl"
     # Порог по anomaly_score (None = использовать бинарное предсказание модели)
     # Чем ниже значение, тем выше чувствительность.
     score_threshold: Optional[float] = None
-
     # Сколько минут трафика хранить для отправки на веб-сервер при аномалии
     traffic_log_minutes: int = 5
     # Хост сервера для отправки архивов (без схемы и пути, например: example.com)
@@ -49,10 +50,20 @@ class DetectionConfig:
     log_anomalies_to_sqlite: bool = True
     # Путь к локальной SQLite БД с метаданными аномалий
     anomalies_sqlite_path: str = "anomalies.db"
-    # Путь к файлу лога
-    log_file_path: str = "anomaly_detector.log"
     # Интервал вывода статистики захваченных пакетов (секунды)
     log_stats_interval: int = 10
+
+
+@dataclass
+class ServiceConfig:
+    """Параметры режима службы/демона."""
+
+    # Суммарная длительность обучения в минутах (накапливается между перезапусками)
+    training_duration_minutes: int = 30
+    # Файл состояния обучения (сохраняется между перезагрузками)
+    state_file: str = "service_training_state.json"
+    # PID-файл (только Linux)
+    pid_file: str = "/var/run/anomaly_detector.pid"
 
 
 @dataclass
@@ -60,34 +71,12 @@ class ModelConfig:
     """Параметры модели Isolation Forest."""
 
     # Ожидаемая доля аномалий в обучающем наборе
-    contamination: float = 0.05
-
-
-@dataclass
-class ServiceConfig:
-    """Параметры режима службы/демона."""
-
-    # Сетевой интерфейс
-    interface: str = "eth0"
-    # Суммарная длительность обучения в минутах (накапливается между перезапусками)
-    training_duration_minutes: int = 30
-    # Размер временного окна агрегации в секундах
-    window_size_seconds: float = 5.0
-    # Путь к файлу модели
-    model_path: str = "anomaly_model.pkl"
-    # Порог по anomaly_score (None = использовать бинарное предсказание модели)
-    # Чем ниже значение, тем выше чувствительность.
-    score_threshold: Optional[float] = None
-    # Файл состояния обучения (сохраняется между перезагрузками)
-    state_file: str = "service_training_state.json"
-    # Путь к лог-файлу
-    log_file_path: str = "anomaly_detector.log"
-    # PID-файл (только Linux)
-    pid_file: str = "/var/run/anomaly_detector.pid"
+    contamination: float = 0.01
 
 
 # Экземпляры конфигураций, которые будут использоваться в коде
+common = CommonConfig()
 training = TrainingConfig()
 detection = DetectionConfig()
-model = ModelConfig()
 service = ServiceConfig()
+model = ModelConfig()

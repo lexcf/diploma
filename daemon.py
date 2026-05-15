@@ -2,10 +2,11 @@
 Запуск детектора аномалий как службы (Windows) или демона (Linux).
 
   Linux (требуются права root для захвата пакетов):
+      sudo python daemon.py install           # установить и запустить systemd-сервис
       sudo python daemon.py start             # запустить демон в фоне
       sudo python daemon.py stop              # остановить демон
       sudo python daemon.py status            # проверить статус
-      sudo python daemon.py generate-systemd  # вывести unit-файл для systemd
+      sudo python daemon.py remove            # остановить и удалить systemd-сервис
 
   Windows (от имени администратора):
       python daemon.py install   # зарегистрировать службу
@@ -15,7 +16,7 @@
       python daemon.py debug     # запустить интерактивно (для отладки)
 
 Все параметры (интерфейс, длительность обучения, пути к файлам и т.д.)
-берутся из config.py — раздел ServiceConfig.
+берутся из config.py.
 """
 
 import os
@@ -126,11 +127,14 @@ def _linux_status(pid_file: str) -> None:
         print(f"Демон не запущен (устаревший PID-файл: {pid})")
 
 
-def _generate_systemd(pid_file: str) -> None:
-    import config as _cfg
+_SYSTEMD_UNIT = "anomaly_detector"
+_SYSTEMD_UNIT_PATH = f"/etc/systemd/system/{_SYSTEMD_UNIT}.service"
+
+
+def _build_unit_content(pid_file: str) -> str:
     python = sys.executable
     script = os.path.abspath(__file__)
-    unit = f"""\
+    return f"""\
 [Unit]
 Description=Anomaly Detector — детектор аномалий сетевого трафика
 After=network.target
@@ -147,11 +151,50 @@ RestartSec=10
 [Install]
 WantedBy=multi-user.target
 """
-    print(unit)
-    print("# Установка:")
-    print(f"#   sudo cp anomaly_detector.service /etc/systemd/system/")
-    print(f"#   sudo systemctl daemon-reload")
-    print(f"#   sudo systemctl enable --now anomaly_detector")
+
+
+def _linux_install(pid_file: str) -> None:
+    import subprocess
+    unit_content = _build_unit_content(pid_file)
+    try:
+        with open(_SYSTEMD_UNIT_PATH, "w") as f:
+            f.write(unit_content)
+        print(f"Записан unit-файл: {_SYSTEMD_UNIT_PATH}")
+    except PermissionError:
+        print(f"Ошибка: нет прав на запись в {_SYSTEMD_UNIT_PATH}. Запустите с sudo.")
+        sys.exit(1)
+
+    for cmd in (
+        ["systemctl", "daemon-reload"],
+        ["systemctl", "enable", "--now", _SYSTEMD_UNIT],
+    ):
+        result = subprocess.run(cmd)
+        if result.returncode != 0:
+            print(f"Ошибка при выполнении: {' '.join(cmd)}")
+            sys.exit(result.returncode)
+
+    print(f"Служба '{_SYSTEMD_UNIT}' установлена и запущена.")
+    print(f"Тип запуска: Автоматически (WantedBy=multi-user.target)")
+
+
+def _linux_remove(pid_file: str) -> None:
+    import subprocess
+    for cmd in (
+        ["systemctl", "disable", "--now", _SYSTEMD_UNIT],
+    ):
+        subprocess.run(cmd)  # не прерываем, даже если сервис не был активен
+
+    try:
+        os.remove(_SYSTEMD_UNIT_PATH)
+        print(f"Удалён unit-файл: {_SYSTEMD_UNIT_PATH}")
+    except FileNotFoundError:
+        print(f"Unit-файл не найден: {_SYSTEMD_UNIT_PATH}")
+    except PermissionError:
+        print(f"Ошибка: нет прав на удаление {_SYSTEMD_UNIT_PATH}. Запустите с sudo.")
+        sys.exit(1)
+
+    subprocess.run(["systemctl", "daemon-reload"])
+    print(f"Служба '{_SYSTEMD_UNIT}' удалена.")
 
 
 # ─── Windows service ──────────────────────────────────────────────────────────
@@ -277,10 +320,11 @@ def main() -> None:
     cmd = sys.argv[1] if len(sys.argv) > 1 else ""
 
     commands = {
-        "start": lambda: _linux_start(pid_file),
-        "stop": lambda: _linux_stop(pid_file),
-        "status": lambda: _linux_status(pid_file),
-        "generate-systemd": lambda: _generate_systemd(pid_file),
+        "install": lambda: _linux_install(pid_file),
+        "start":   lambda: _linux_start(pid_file),
+        "stop":    lambda: _linux_stop(pid_file),
+        "status":  lambda: _linux_status(pid_file),
+        "remove":  lambda: _linux_remove(pid_file),
     }
 
     if cmd in commands:

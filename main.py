@@ -121,7 +121,7 @@ def detect_anomalies(interface: str, model_path: str,
                 f"{e}"
             )
     
-    log = setup_logger(config.detection.log_file_path)
+    log = setup_logger(config.common.log_file_path)
     log.info("Запуск детекции аномалий: интерфейс=%s, модель=%s", interface, model_path)
 
     anomaly_count = 0
@@ -298,27 +298,29 @@ def main():
         epilog=(
             'Режим service запускает автономную службу/демон: обучение с сохранением\n'
             'состояния между перезагрузками, затем непрерывная детекция. Все параметры\n'
-            'в этом режиме берутся из блока service в config.py.\n'
+            'берутся из config.py.\n'
             '\n'
-            'Linux:\n'
-            '  sudo python main.py --mode service start\n'
-            '  sudo python main.py --mode service stop\n'
-            '  sudo python main.py --mode service status\n'
-            '  sudo python main.py --mode service generate-systemd\n'
+            'Linux (требуются права root):\n'
+            '  sudo python main.py --mode service install  # установить и запустить\n'
+            '  sudo python main.py --mode service start    # запустить демон\n'
+            '  sudo python main.py --mode service stop     # остановить демон\n'
+            '  sudo python main.py --mode service status   # проверить статус\n'
+            '  sudo python main.py --mode service remove   # удалить сервис\n'
             '\n'
             'Windows (от имени администратора):\n'
-            '  python main.py --mode service install\n'
-            '  python main.py --mode service start\n'
-            '  python main.py --mode service stop\n'
-            '  python main.py --mode service remove\n'
+            '  python main.py --mode service install  # установить и зарегистрировать\n'
+            '  python main.py --mode service start    # запустить службу\n'
+            '  python main.py --mode service stop     # остановить службу\n'
+            '  python main.py --mode service remove   # удалить службу\n'
+            '  python main.py --mode service debug    # запустить интерактивно\n'
         )
     )
     
     parser.add_argument(
         '--interface', '-i',
         type=str,
-        default=config.training.interface,
-        help=f'Имя сетевого интерфейса (по умолчанию: {config.training.interface})'
+        default=config.common.interface,
+        help=f'Имя сетевого интерфейса (по умолчанию: {config.common.interface})'
     )
     
     parser.add_argument(
@@ -340,8 +342,8 @@ def main():
     parser.add_argument(
         '--model', '-M',
         type=str,
-        default=config.training.model_path,
-        help=f'Путь к файлу модели (по умолчанию: {config.training.model_path})'
+        default=config.common.model_path,
+        help=f'Путь к файлу модели (по умолчанию: {config.common.model_path})'
     )
     
     parser.add_argument(
@@ -350,17 +352,17 @@ def main():
         default=config.training.duration_minutes,
         help=(
             'Длительность обучения в минутах (только для режима train, '
-            f'по умолчанию: {config.training.duration_minutes})'
+            f'по умолчанию: {config.training.duration_minutes} мин)'
         )
     )
     
     parser.add_argument(
         '--window-size', '-w',
         type=float,
-        default=config.training.window_size_seconds,
+        default=config.common.window_size_seconds,
         help=(
             'Размер временного окна в секундах (используется в обоих режимах, '
-            f'по умолчанию: {config.training.window_size_seconds})'
+            f'по умолчанию: {config.common.window_size_seconds})'
         )
     )
 

@@ -12,7 +12,6 @@
 import json
 import os
 import signal
-import sys
 import time
 import threading
 from typing import Dict, List, Optional
@@ -46,16 +45,16 @@ def _save_state(path: str, elapsed: float, windows: List[Dict]) -> None:
 # ─── Public entry point ───────────────────────────────────────────────────────
 
 def run_service() -> None:
-    cfg = config.service
-    # Переходим в директорию скрипта, чтобы относительные пути в config работали корректно
+    svc = config.service
+    com = config.common
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
 
-    log = setup_logger(cfg.log_file_path)
-    total_seconds = cfg.training_duration_minutes * 60
+    log = setup_logger(com.log_file_path)
+    total_seconds = svc.training_duration_minutes * 60
 
     # --- Определяем фазу запуска ---
-    state = _load_state(cfg.state_file)
-    model_ready = os.path.exists(cfg.model_path)
+    state = _load_state(svc.state_file)
+    model_ready = os.path.exists(com.model_path)
 
     if state is not None:
         elapsed_before: float = state.get("elapsed_seconds", 0.0)
@@ -70,12 +69,12 @@ def run_service() -> None:
             log.info("Файл состояния найден: обучение уже завершено, обучаем модель")
             remaining = 0.0
     elif model_ready:
-        log.info("Модель найдена (%s), обучение пропущено", cfg.model_path)
+        log.info("Модель найдена (%s), обучение пропущено", com.model_path)
         detector = AnomalyDetector()
-        detector.load(cfg.model_path)
-        if cfg.score_threshold is not None:
-            detector.score_threshold = cfg.score_threshold
-        _run_detection(cfg, detector, log)
+        detector.load(com.model_path)
+        if config.detection.score_threshold is not None:
+            detector.score_threshold = config.detection.score_threshold
+        _run_detection(detector, log)
         return
     else:
         elapsed_before = 0.0
@@ -83,13 +82,13 @@ def run_service() -> None:
         remaining = total_seconds
         log.info(
             "Первый запуск: обучение %d мин на интерфейсе %s",
-            cfg.training_duration_minutes, cfg.interface,
+            svc.training_duration_minutes, com.interface,
         )
 
     # --- Фаза обучения ---
     if remaining > 0:
-        capture = PacketCapture(cfg.interface)
-        aggregator = TimeWindowAggregator(window_size=cfg.window_size_seconds)
+        capture = PacketCapture(com.interface)
+        aggregator = TimeWindowAggregator(window_size=com.window_size_seconds)
         session_start = time.time()
 
         def on_packet(packet: Dict) -> None:
@@ -97,7 +96,7 @@ def run_service() -> None:
             if completed:
                 aggregated_data.extend(completed)
                 elapsed_total = elapsed_before + (time.time() - session_start)
-                _save_state(cfg.state_file, elapsed_total, aggregated_data)
+                _save_state(svc.state_file, elapsed_total, aggregated_data)
                 last = completed[-1]
                 log.info(
                     "Обучение: окон=%d, прошло=%.0f с из %.0f с | "
@@ -112,7 +111,7 @@ def run_service() -> None:
         tail = aggregator.flush()
         aggregated_data.extend(tail)
         elapsed_total = elapsed_before + (time.time() - session_start)
-        _save_state(cfg.state_file, elapsed_total, aggregated_data)
+        _save_state(svc.state_file, elapsed_total, aggregated_data)
         log.info("Фаза обучения завершена: %d окон за %.1f с", len(aggregated_data), elapsed_total)
 
     # --- Обучение модели ---
@@ -123,35 +122,38 @@ def run_service() -> None:
     detector = AnomalyDetector(contamination=config.model.contamination)
     try:
         detector.train(aggregated_data)
-        detector.save(cfg.model_path)
-        log.info("Модель сохранена: %s", cfg.model_path)
+        detector.save(com.model_path)
+        log.info("Модель сохранена: %s", com.model_path)
     except Exception as exc:
         log.error("Ошибка при обучении модели: %s", exc)
         return
 
-    if cfg.score_threshold is not None:
-        detector.score_threshold = cfg.score_threshold
+    if config.detection.score_threshold is not None:
+        detector.score_threshold = config.detection.score_threshold
 
     try:
-        os.remove(cfg.state_file)
+        os.remove(svc.state_file)
     except OSError:
         pass
 
     log.info("Переход в режим детекции")
-    _run_detection(cfg, detector, log)
+    _run_detection(detector, log)
 
 
 # ─── Detection loop ───────────────────────────────────────────────────────────
 
-def _run_detection(cfg, detector: AnomalyDetector, log) -> None:
-    capture = PacketCapture(cfg.interface)
-    aggregator = TimeWindowAggregator(window_size=cfg.window_size_seconds)
-    traffic_logger = TrafficLogger(retention_minutes=config.detection.traffic_log_minutes)
+def _run_detection(detector: AnomalyDetector, log) -> None:
+    det = config.detection
+    com = config.common
+
+    capture = PacketCapture(com.interface)
+    aggregator = TimeWindowAggregator(window_size=com.window_size_seconds)
+    traffic_logger = TrafficLogger(retention_minutes=det.traffic_log_minutes)
 
     metadata_logger = None
-    if config.detection.log_anomalies_to_sqlite:
+    if det.log_anomalies_to_sqlite:
         try:
-            metadata_logger = AnomalyMetadataLogger(config.detection.anomalies_sqlite_path)
+            metadata_logger = AnomalyMetadataLogger(det.anomalies_sqlite_path)
         except Exception as exc:
             log.warning("Не удалось инициализировать SQLite-логгер: %s", exc)
 
@@ -159,7 +161,7 @@ def _run_detection(cfg, detector: AnomalyDetector, log) -> None:
     stop_event = threading.Event()
 
     def _stats_loop() -> None:
-        while not stop_event.wait(config.detection.log_stats_interval):
+        while not stop_event.wait(det.log_stats_interval):
             now = time.time()
             elapsed = now - stats["last_ts"]
             pps = stats["since_last"] / elapsed if elapsed > 0 else 0.0
@@ -187,7 +189,7 @@ def _run_detection(cfg, detector: AnomalyDetector, log) -> None:
                     " [АНОМАЛИЯ]" if result["is_anomaly"] else "",
                 )
                 if result["is_anomaly"]:
-                    _handle_anomaly(result, traffic_logger, metadata_logger, cfg, detector, log)
+                    _handle_anomaly(result, traffic_logger, metadata_logger, detector, log)
 
     def _on_sigterm(signum, frame) -> None:
         stop_event.set()
@@ -204,7 +206,9 @@ def _run_detection(cfg, detector: AnomalyDetector, log) -> None:
         log.info("Детекция остановлена. Всего пакетов: %d", stats["total"])
 
 
-def _handle_anomaly(result, traffic_logger, metadata_logger, cfg, detector, log) -> None:
+def _handle_anomaly(result, traffic_logger, metadata_logger, detector, log) -> None:
+    det = config.detection
+    com = config.common
     ws = result.get("window_start", 0)
     we = result.get("window_end", 0)
     log.warning(
@@ -226,14 +230,14 @@ def _handle_anomaly(result, traffic_logger, metadata_logger, cfg, detector, log)
         try:
             metadata_logger.log_anomaly(
                 result=result,
-                interface=cfg.interface,
-                model_path=cfg.model_path,
+                interface=com.interface,
+                model_path=com.model_path,
                 score_threshold=detector.score_threshold,
             )
         except Exception as exc:
             log.warning("Не удалось записать аномалию в SQLite: %s", exc)
 
-    if not config.detection.send_zip_on_anomaly:
+    if not det.send_zip_on_anomaly:
         return
 
     packets_for_zip = traffic_logger.get_recent_packets(we)
@@ -244,9 +248,5 @@ def _handle_anomaly(result, traffic_logger, metadata_logger, cfg, detector, log)
     if not zip_path:
         return
 
-    if not send_zip_to_server(
-        zip_path,
-        config.detection.alert_server_host,
-        config.detection.alert_bearer_token,
-    ):
-        log.warning("Не удалось отправить архив на %s", config.detection.alert_server_host)
+    if not send_zip_to_server(zip_path, det.alert_server_host, det.alert_bearer_token):
+        log.warning("Не удалось отправить архив на %s", det.alert_server_host)
