@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 from packet_capture import PacketCapture
 from aggregation import TimeWindowAggregator
 from anomaly_detector import AnomalyDetector
-from alerting import TrafficLogger, build_zip_from_packets, send_zip_to_server
+from alerting import TrafficLogger, AnomalyCoalescer
 from anomaly_metadata_db import AnomalyMetadataLogger
 from logger import setup_logger
 import config
@@ -149,6 +149,7 @@ def _run_detection(detector: AnomalyDetector, log) -> None:
     capture = PacketCapture(com.interface)
     aggregator = TimeWindowAggregator(window_size=com.window_size_seconds)
     traffic_logger = TrafficLogger(retention_minutes=det.traffic_log_minutes)
+    coalescer = AnomalyCoalescer(traffic_logger, det.alert_server_host, det.alert_bearer_token)
 
     metadata_logger = None
     if det.log_anomalies_to_sqlite:
@@ -189,7 +190,9 @@ def _run_detection(detector: AnomalyDetector, log) -> None:
                     " [АНОМАЛИЯ]" if result["is_anomaly"] else "",
                 )
                 if result["is_anomaly"]:
-                    _handle_anomaly(result, traffic_logger, metadata_logger, detector, log)
+                    _handle_anomaly(result, traffic_logger, metadata_logger, detector, coalescer, log)
+                elif det.send_zip_on_anomaly:
+                    coalescer.on_normal_window()
 
     def _on_sigterm(signum, frame) -> None:
         stop_event.set()
@@ -202,11 +205,15 @@ def _run_detection(detector: AnomalyDetector, log) -> None:
     try:
         capture.capture_packets_continuous(on_packet)
     except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
         stop_event.set()
+        if det.send_zip_on_anomaly:
+            coalescer.flush_remaining()
         log.info("Детекция остановлена. Всего пакетов: %d", stats["total"])
 
 
-def _handle_anomaly(result, traffic_logger, metadata_logger, detector, log) -> None:
+def _handle_anomaly(result, traffic_logger, metadata_logger, detector, coalescer, log) -> None:
     det = config.detection
     com = config.common
     ws = result.get("window_start", 0)
@@ -237,16 +244,5 @@ def _handle_anomaly(result, traffic_logger, metadata_logger, detector, log) -> N
         except Exception as exc:
             log.warning("Не удалось записать аномалию в SQLite: %s", exc)
 
-    if not det.send_zip_on_anomaly:
-        return
-
-    packets_for_zip = traffic_logger.get_recent_packets(we)
-    if not packets_for_zip:
-        return
-
-    zip_path = build_zip_from_packets(packets_for_zip)
-    if not zip_path:
-        return
-
-    if not send_zip_to_server(zip_path, det.alert_server_host, det.alert_bearer_token):
-        log.warning("Не удалось отправить архив на %s", det.alert_server_host)
+    if det.send_zip_on_anomaly:
+        coalescer.on_anomaly(result)

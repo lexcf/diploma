@@ -11,7 +11,7 @@ from typing import Optional
 from packet_capture import PacketCapture
 from aggregation import TimeWindowAggregator
 from anomaly_detector import AnomalyDetector
-from alerting import TrafficLogger, build_zip_from_packets, send_zip_to_server
+from alerting import TrafficLogger, AnomalyCoalescer
 from anomaly_metadata_db import AnomalyMetadataLogger
 from logger import setup_logger
 import config
@@ -107,6 +107,11 @@ def detect_anomalies(interface: str, model_path: str,
     capture = PacketCapture(interface)
     aggregator = TimeWindowAggregator(window_size=window_size)
     traffic_logger = TrafficLogger(retention_minutes=config.detection.traffic_log_minutes)
+    coalescer = AnomalyCoalescer(
+        traffic_logger,
+        config.detection.alert_server_host,
+        config.detection.alert_bearer_token,
+    )
     metadata_logger = None
     if config.detection.log_anomalies_to_sqlite:
         try:
@@ -174,10 +179,11 @@ def detect_anomalies(interface: str, model_path: str,
                 )
                 if result['is_anomaly']:
                     anomaly_count += 1
-                    handle_anomaly(result, traffic_logger)
+                    handle_anomaly(result)
+                elif config.detection.send_zip_on_anomaly:
+                    coalescer.on_normal_window()
 
-    def handle_anomaly(result: dict, logger: TrafficLogger):
-        """Обработка обнаруженной аномалии: вывод и отправка лога трафика."""
+    def handle_anomaly(result: dict):
         print_anomaly(result)
 
         window_start = result.get("window_start", 0)
@@ -210,35 +216,17 @@ def detect_anomalies(interface: str, model_path: str,
             except Exception as e:
                 print(f"Предупреждение: не удалось записать метаданные аномалии в SQLite: {e}")
 
-        if not config.detection.send_zip_on_anomaly:
-            return
-
-        window_end = result.get('window_end', time.time())
-        packets_for_zip = logger.get_recent_packets(window_end)
-
-        if not packets_for_zip:
-            print("Нет пакетов для формирования архива трафика за указанный период.")
-            return
-
-        zip_path = build_zip_from_packets(packets_for_zip)
-        if not zip_path:
-            print("Не удалось сформировать ZIP-архив с трафиком.")
-            return
-
-        ok = send_zip_to_server(
-            zip_path,
-            config.detection.alert_server_host,
-            config.detection.alert_bearer_token,
-        )
-        if ok:
-            log.info("Архив с трафиком отправлен: %s", zip_path)
-        else:
-            log.warning("Не удалось отправить архив. Файл сохранён локально: %s", zip_path)
+        if config.detection.send_zip_on_anomaly:
+            coalescer.on_anomaly(result)
     
     try:
         capture.capture_packets_continuous(process_packet)
     except KeyboardInterrupt:
+        pass
+    finally:
         stop_stats.set()
+        if config.detection.send_zip_on_anomaly:
+            coalescer.flush_remaining()
         print(f"\n\nОстановлено пользователем")
         print(f"Всего обработано: {total_count}")
         print(f"Аномалий обнаружено: {anomaly_count}")

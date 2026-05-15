@@ -5,6 +5,7 @@
 import json
 import logging
 import os
+import threading
 import time
 import zipfile
 from typing import Dict, List
@@ -123,3 +124,71 @@ def send_zip_to_server(zip_path: str, host: str, token: str) -> bool:
         _log.error("Ошибка при отправке архива на %s: %s", url, exc)
 
     return False
+
+
+class AnomalyCoalescer:
+    """
+    Группирует последовательные аномалии в одно событие.
+
+    Вызывайте on_anomaly() для каждого аномального окна и on_normal_window()
+    для каждого нормального. ZIP отправляется после QUIET_WINDOWS подряд
+    идущих нормальных окон с момента последней аномалии.
+    """
+
+    QUIET_WINDOWS = 2
+
+    def __init__(
+        self,
+        traffic_logger: "TrafficLogger",
+        host: str,
+        token: str,
+    ) -> None:
+        self._traffic_logger = traffic_logger
+        self._host = host
+        self._token = token
+        self._count: int = 0
+        self._quiet: int = 0
+        self._last_we: float = 0.0
+
+    def on_anomaly(self, result: Dict) -> None:
+        self._count += 1
+        self._quiet = 0
+        self._last_we = result.get("window_end", time.time())
+
+    def on_normal_window(self) -> None:
+        if self._count == 0:
+            return
+        self._quiet += 1
+        if self._quiet >= self.QUIET_WINDOWS:
+            self._flush()
+
+    def flush_remaining(self) -> None:
+        """Принудительная отправка при завершении (Ctrl+C / SIGTERM)."""
+        if self._count > 0:
+            self._flush()
+
+    def _flush(self) -> None:
+        count = self._count
+        last_we = self._last_we
+        self._count = 0
+        self._quiet = 0
+        self._last_we = 0.0
+
+        _log.info(
+            "Отправка ZIP: группа из %d аномалий, конец события %s",
+            count,
+            time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last_we)),
+        )
+
+        packets = self._traffic_logger.get_recent_packets(last_we)
+        if not packets:
+            _log.warning("Нет пакетов для архивации")
+            return
+
+        zip_path = build_zip_from_packets(packets)
+        if zip_path:
+            threading.Thread(
+                target=send_zip_to_server,
+                args=(zip_path, self._host, self._token),
+                daemon=True,
+            ).start()

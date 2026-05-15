@@ -6,7 +6,6 @@
 from scapy.all import sniff, get_if_list
 from scapy.layers.inet import IP, TCP, UDP, ICMP
 from scapy.layers.l2 import Ether, ARP, Dot1Q
-from scapy.layers.inet6 import IPv6
 import time
 from typing import Dict, Optional, List
 
@@ -98,34 +97,17 @@ class PacketCapture:
                 features['icmp_type'] = icmp.type
                 features['icmp_code'] = icmp.code
         
-        # IPv6
-        elif IPv6 in packet:
-            ipv6 = packet[IPv6]
-            features['src_ip'] = ipv6.src
-            features['dst_ip'] = ipv6.dst
-            features['proto'] = ipv6.nh
-            features['ttl'] = ipv6.hlim
-            
-            if TCP in packet:
-                tcp = packet[TCP]
-                features['src_port'] = tcp.sport
-                features['dst_port'] = tcp.dport
-                features['tcp_flags'] = int(tcp.flags)
-            elif UDP in packet:
-                udp = packet[UDP]
-                features['src_port'] = udp.sport
-                features['dst_port'] = udp.dport
-            elif ICMP in packet:
-                icmp = packet[ICMP]
-                features['icmp_type'] = icmp.type
-                features['icmp_code'] = icmp.code
-        
         # ARP
         elif ARP in packet:
             arp = packet[ARP]
             features['src_ip'] = arp.psrc
             features['dst_ip'] = arp.pdst
-        
+
+        # Пакеты без распознанного сетевого уровня (неизвестный eth_type и т.п.)
+        # не несут полезной информации — исключаем из обработки
+        if features['src_ip'] is None and features['dst_ip'] is None:
+            return None
+
         return features
     
     def capture_packets(self, duration: int, callback=None) -> List[Dict]:
