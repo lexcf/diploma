@@ -60,7 +60,7 @@ class ModelConfig:
     """Параметры модели Isolation Forest."""
 
     # Ожидаемая доля аномалий в обучающем наборе
-    contamination: float = 0.01
+    contamination: float = 0.05
 
 
 @dataclass
